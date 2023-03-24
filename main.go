@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"regexp"
+	"strings"
 	"time"
 )
 
@@ -28,17 +29,24 @@ type (
 		CurrencyCode string `json:"currency_code"`
 	}
 
+	ByCallingCode struct {
+		Country     string `json:"country"`
+		CallingCode int    `json:"calling_code"`
+	}
+
 	Currency struct {
+		ID   string `json:"_id,omitempty"`
 		Code string `json:"code,omitempty"`
 		Name string `json:"name,omitempty"`
 	}
 
 	CountryResult struct {
-		ID        string   `json:"id"`
-		Code      string   `json:"code"`
-		Name      string   `json:"name"`
-		Continent string   `json:"continent"`
-		Currency  Currency `json:"currency,omitempty"`
+		ID          string    `json:"id"`
+		Code        string    `json:"code"`
+		Name        string    `json:"name"`
+		Continent   string    `json:"continent"`
+		CallingCode string    `json:"dial_code"`
+		Currency    *Currency `json:"currency,omitempty"`
 	}
 )
 
@@ -64,8 +72,8 @@ func handler(w http.ResponseWriter, r *http.Request) {
 
 		if regexp.MustCompile(`^\/preview[\/]*$`).MatchString(r.URL.Path) {
 			w.WriteHeader(http.StatusNotFound)
-			abb, cont, cur, curD := loadData()
-			data := toCountryResult(abb, cont, cur, curD)
+			abb, cont, cur, curD, callingCode := loadData()
+			data := toCountryResult(abb, cont, cur, curD, callingCode)
 			j, err := json.Marshal(&data)
 			if err != nil {
 				fmt.Println(err)
@@ -87,6 +95,7 @@ func loadData() (
 	cont []ByContinent,
 	cur []ByCurrency,
 	curD []Currency,
+	ccD []ByCallingCode,
 ) {
 	var countriesByAbbreviation []ByAbbreviation
 	countryByAbbreviation, err := os.Open("./ref/country-by-abbreviation.json")
@@ -124,7 +133,16 @@ func loadData() (
 	currenciesByteValue, _ := ioutil.ReadAll(currenciesFile)
 	json.Unmarshal(currenciesByteValue, &currencies)
 
-	return countriesByAbbreviation, countriesByContinent, countriesByCurrency, currencies
+	var callingCode []ByCallingCode
+	callingCodeFile, err := os.Open("./ref/country-by-calling-code.json")
+	if err != nil {
+		fmt.Println(err)
+	}
+	defer callingCodeFile.Close()
+	callingCodeByteValue, _ := ioutil.ReadAll(callingCodeFile)
+	json.Unmarshal(callingCodeByteValue, &callingCode)
+
+	return countriesByAbbreviation, countriesByContinent, countriesByCurrency, currencies, callingCode
 }
 
 func toCountryResult(
@@ -132,6 +150,7 @@ func toCountryResult(
 	contArr []ByContinent,
 	curArr []ByCurrency,
 	curD []Currency,
+	ccD []ByCallingCode,
 ) []CountryResult {
 	var countries []CountryResult
 	for _, abbObj := range abbArr {
@@ -140,27 +159,43 @@ func toCountryResult(
 		country.Code = abbObj.Abbreviation
 		country.Name = abbObj.Country
 		for _, contObj := range contArr {
-			for _, curObj := range curArr {
-				if curObj.Country == country.Name {
-					for _, curDObj := range curD {
-						if curDObj.Code == curObj.CurrencyCode {
-							country.Currency = Currency{
-								Code: curDObj.Code,
-								Name: curDObj.Name,
-							}
-							break
-						}
-					}
-					break
-				}
-			}
-
 			if contObj.Country == country.Name {
 				country.Continent = contObj.Continent
 				break
 			}
 		}
+		for _, curObj := range curArr {
+			if curObj.Country == country.Name {
+				for _, curDObj := range curD {
+					if curDObj.Code == curObj.CurrencyCode {
+						country.Currency = &Currency{
+							Code: curDObj.Code,
+							Name: curDObj.Name,
+						}
+						break
+					}
+				}
+				break
+			}
+		}
+		for _, ccDObj := range ccD {
+			if strings.ToUpper(ccDObj.Country) == strings.ToUpper(country.Name) {
+				country.CallingCode = fmt.Sprintf("+%d", ccDObj.CallingCode)
+				break
+			}
+		}
 		countries = append(countries, country)
 	}
-	return countries
+
+	var newCountries []CountryResult
+	for _, cData := range countries {
+		for _, curD := range curD {
+			if cData.Currency != nil && curD.Code == cData.Currency.Code {
+				newCountries = append(newCountries, cData)
+				break
+			}
+		}
+	}
+
+	return newCountries
 }
